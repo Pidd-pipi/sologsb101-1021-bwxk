@@ -19,6 +19,7 @@ import type { Design } from '$lib/types/design';
 import type { Carve } from '$lib/types/carve';
 import type { Impression } from '$lib/types/impression';
 import type { Catalog } from '$lib/types/catalog';
+import { summarizeSchedule } from './schedule';
 
 export interface StoneSize {
   lengthMm: number;
@@ -98,7 +99,7 @@ export function stoneStateLabel(state: StoneState): string {
   return STONE_STATE_LABEL[state];
 }
 
-/** 印石维度统计：已刻方数、闲置天数、最近钤印日期、印谱收录方数 */
+/** 印石维度统计：已刻方数、闲置天数、最近钤印日期、印谱收录方数、排期汇总 */
 export function buildStoneStats(
   stones: Stone[],
   designs: Design[],
@@ -122,6 +123,7 @@ export function buildStoneStats(
       ...stoneDesigns.map((design) => design.updatedAt),
       0,
     );
+    const schedule = summarizeSchedule(stoneCarves);
     result[stone.id] = {
       stoneId: stone.id,
       carvedCount,
@@ -131,6 +133,10 @@ export function buildStoneStats(
       catalogIncluded: catalogs.filter(
         (catalog) => catalog.stoneId === stone.id && catalog.included === 'included',
       ).length,
+      operators: schedule.operators,
+      eta: schedule.eta,
+      unscheduled: schedule.unscheduled,
+      unfinished: schedule.unfinished,
     };
   });
   return result;

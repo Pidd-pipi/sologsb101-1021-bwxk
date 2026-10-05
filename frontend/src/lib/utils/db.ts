@@ -1,7 +1,8 @@
 /**
  * IndexedDB 持久化层（Dexie 封装）
  * - 数据结构版本号与升级迁移逻辑（v1 初版；v2 为 impressions 增加 grade 索引、
- *   为 catalogs 增加 orderNo 索引，并回填历史记录缺失字段）
+ *   为 catalogs 增加 orderNo 索引，并回填历史记录缺失字段；v3 为 carves 增加
+ *   planDate 计划日索引，无安排的旧工序置空串进入待排区）
  * - 五张业务表的增删改查与整库导入导出
  * - 首次打开自动播种三层互相引用的演示数据（幂等）
  * 纯前端应用：不依赖任何后端服务或数据库。
@@ -12,12 +13,13 @@ import type { Design } from '$lib/types/design';
 import type { Carve } from '$lib/types/carve';
 import type { Impression } from '$lib/types/impression';
 import type { Catalog } from '$lib/types/catalog';
+import { addDays, nextWorkday, todayStr, workdayOrNext } from './schedule';
 
 /** 数据库名（README 与导出文件均使用该名称） */
 export const DB_NAME = 'gbsealcarve';
 
 /** 当前数据结构版本号 */
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 
 /** localStorage 侧少量元数据键 */
 export const LS_KEYS = {
@@ -99,7 +101,7 @@ class SealCarveDatabase extends Dexie {
     });
 
     // v2：补充检索索引并回填历史记录缺失字段
-    this.version(DB_VERSION)
+    this.version(2)
       .stores({
         stones: 'id, name, stoneType, knobStyle, state, purchaseDate, updatedAt',
         designs: 'id, stoneId, style, borderStyle, adopted, updatedAt',
@@ -131,6 +133,25 @@ class SealCarveDatabase extends Dexie {
             if (!catalog.included) catalog.included = 'pending';
           });
       });
+
+    // v3：刻制工序增加计划日（周排期）；无安排的旧工序置空串，进入待排区
+    this.version(DB_VERSION)
+      .stores({
+        stones: 'id, name, stoneType, knobStyle, state, purchaseDate, updatedAt',
+        designs: 'id, stoneId, style, borderStyle, adopted, updatedAt',
+        carves: 'id, designId, seq, knifeMethod, operator, state, planDate, updatedAt',
+        impressions: 'id, designId, grade, paperType, stampedAt, updatedAt',
+        catalogs: 'id, stoneId, designId, orderNo, included, updatedAt',
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table<Carve>('carves')
+          .toCollection()
+          .modify((carve) => {
+            if (typeof carve.planDate !== 'string') carve.planDate = '';
+            if (typeof carve.operator !== 'string') carve.operator = '';
+          });
+      });
   }
 }
 
@@ -157,6 +178,10 @@ export async function initDatabase(): Promise<void> {
 export async function seedDatabase(): Promise<void> {
   const now = Date.now();
   const day = 86400000;
+  // 周排期演示：未完工工序排在最近的工作日，一道留空进入待排区
+  const today = todayStr();
+  const workday0 = workdayOrNext(today);
+  const workday1 = nextWorkday(workday0);
 
   const stones: Stone[] = [
     {
@@ -214,15 +239,15 @@ export async function seedDatabase(): Promise<void> {
   ];
 
   const carves: Carve[] = [
-    { id: 'carve_010101', designId: 'design_0101', seq: 1, knifeMethod: 'chong', minutes: 40, operator: '顾墨', state: 'done', createdAt: now - day * 66, updatedAt: now - day * 64 },
-    { id: 'carve_010102', designId: 'design_0101', seq: 2, knifeMethod: 'qie', minutes: 30, operator: '顾墨', state: 'done', createdAt: now - day * 64, updatedAt: now - day * 62 },
-    { id: 'carve_010103', designId: 'design_0101', seq: 3, knifeMethod: 'trim', minutes: 15, operator: '顾墨', state: 'done', createdAt: now - day * 62, updatedAt: now - day * 40 },
-    { id: 'carve_020101', designId: 'design_0201', seq: 1, knifeMethod: 'chong', minutes: 40, operator: '林砚', state: 'done', createdAt: now - day * 36, updatedAt: now - day * 34 },
-    { id: 'carve_020102', designId: 'design_0201', seq: 2, knifeMethod: 'double', minutes: 25, operator: '林砚', state: 'doing', createdAt: now - day * 34, updatedAt: now - day * 3 },
-    { id: 'carve_020103', designId: 'design_0201', seq: 3, knifeMethod: 'trim', minutes: 15, operator: '林砚', state: 'todo', createdAt: now - day * 34, updatedAt: now - day * 6 },
-    { id: 'carve_030101', designId: 'design_0301', seq: 1, knifeMethod: 'chong', minutes: 45, operator: '顾墨', state: 'done', createdAt: now - day * 115, updatedAt: now - day * 112 },
-    { id: 'carve_030102', designId: 'design_0301', seq: 2, knifeMethod: 'trim', minutes: 20, operator: '顾墨', state: 'done', createdAt: now - day * 112, updatedAt: now - day * 100 },
-    { id: 'carve_040101', designId: 'design_0401', seq: 1, knifeMethod: 'qie', minutes: 30, operator: '林砚', state: 'doing', createdAt: now - day * 16, updatedAt: now - day * 2 },
+    { id: 'carve_010101', designId: 'design_0101', seq: 1, knifeMethod: 'chong', minutes: 40, operator: '顾墨', planDate: addDays(today, -64), state: 'done', createdAt: now - day * 66, updatedAt: now - day * 64 },
+    { id: 'carve_010102', designId: 'design_0101', seq: 2, knifeMethod: 'qie', minutes: 30, operator: '顾墨', planDate: addDays(today, -62), state: 'done', createdAt: now - day * 64, updatedAt: now - day * 62 },
+    { id: 'carve_010103', designId: 'design_0101', seq: 3, knifeMethod: 'trim', minutes: 15, operator: '顾墨', planDate: addDays(today, -40), state: 'done', createdAt: now - day * 62, updatedAt: now - day * 40 },
+    { id: 'carve_020101', designId: 'design_0201', seq: 1, knifeMethod: 'chong', minutes: 40, operator: '林砚', planDate: addDays(today, -34), state: 'done', createdAt: now - day * 36, updatedAt: now - day * 34 },
+    { id: 'carve_020102', designId: 'design_0201', seq: 2, knifeMethod: 'double', minutes: 25, operator: '林砚', planDate: workday0, state: 'doing', createdAt: now - day * 34, updatedAt: now - day * 3 },
+    { id: 'carve_020103', designId: 'design_0201', seq: 3, knifeMethod: 'trim', minutes: 15, operator: '林砚', planDate: '', state: 'todo', createdAt: now - day * 34, updatedAt: now - day * 6 },
+    { id: 'carve_030101', designId: 'design_0301', seq: 1, knifeMethod: 'chong', minutes: 45, operator: '顾墨', planDate: addDays(today, -112), state: 'done', createdAt: now - day * 115, updatedAt: now - day * 112 },
+    { id: 'carve_030102', designId: 'design_0301', seq: 2, knifeMethod: 'trim', minutes: 20, operator: '顾墨', planDate: addDays(today, -100), state: 'done', createdAt: now - day * 112, updatedAt: now - day * 100 },
+    { id: 'carve_040101', designId: 'design_0401', seq: 1, knifeMethod: 'qie', minutes: 30, operator: '林砚', planDate: workday1, state: 'doing', createdAt: now - day * 16, updatedAt: now - day * 2 },
   ];
 
   const impressions: Impression[] = [
@@ -309,10 +334,16 @@ export async function clearAllTables(): Promise<void> {
 
 export async function importSnapshot(snapshot: SealCarveSnapshot): Promise<void> {
   await clearAllTables();
+  // 旧版本备份缺少 planDate / operator 字段：规范化为空串，无安排工序进入待排区
+  const carves = snapshot.carves.map((carve) => ({
+    ...carve,
+    operator: typeof carve.operator === 'string' ? carve.operator : '',
+    planDate: typeof carve.planDate === 'string' ? carve.planDate : '',
+  }));
   await db.transaction('rw', [db.stones, db.designs, db.carves, db.impressions, db.catalogs], async () => {
     await db.stones.bulkPut(snapshot.stones);
     await db.designs.bulkPut(snapshot.designs);
-    await db.carves.bulkPut(snapshot.carves);
+    await db.carves.bulkPut(carves);
     await db.impressions.bulkPut(snapshot.impressions);
     await db.catalogs.bulkPut(snapshot.catalogs);
   });

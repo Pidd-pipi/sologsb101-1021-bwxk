@@ -105,7 +105,7 @@ export function createEmptyStoneDraft(): StoneDraft {
   };
 }
 
-/** 印石台账的派生统计（已刻方数、闲置天数、最近钤印日期） */
+/** 印石台账的派生统计（已刻方数、闲置天数、最近钤印日期、排期汇总） */
 export interface StoneStat {
   stoneId: string;
   /** 该石已刻方数（已采用稿且工序完成的印稿数） */
@@ -118,4 +118,12 @@ export interface StoneStat {
   lastStampedAt: string;
   /** 印谱收录方数 */
   catalogIncluded: number;
+  /** 未完工工序的执刀人（去重） */
+  operators: string[];
+  /** 预计完成日：未完工且已排期工序中最晚的计划日；无则空串 */
+  eta: string;
+  /** 未完工但未排期（待排区）的工序数 */
+  unscheduled: number;
+  /** 未完工工序总数 */
+  unfinished: number;
 }

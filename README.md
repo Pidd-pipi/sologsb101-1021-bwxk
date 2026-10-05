@@ -69,7 +69,7 @@ npm run preview    # 本地预览构建产物（http://localhost:22821）
 | --- | --- | --- | --- |
 | `/#/stones` | 印石台账 | 新建印石、按石种与钮式筛选（同步 URL query），显示已刻方数、谱录方数与闲置天数 | Stone、Design |
 | `/#/designs` | 印稿设计与释文 | 朱文白文、边框式样与章法备注录入，标记采用稿（同石采用稿唯一） | Design、Stone |
-| `/#/carve` | 刻制工序看板 | 按印稿列出刀法步骤、拖拽或上下移排序、批量完成；全部完成回写印石为「已刻」 | Carve、Design |
+| `/#/carve` | 刻制工序看板 + 周排期 | 按印稿列出刀法步骤、拖拽或上下移排序、批量完成；工序按执刀人与计划日排入周排期，同一执刀人每日容量 240 分钟，超出拒绝保存、缺口留待排区；顺序或时长改动后未完工工序自动顺延 | Carve、Design |
 | `/#/impressions` | 钤印登记与效果比对 | 同稿多枚并列展示印泥、纸张、压力与评级，按评级择优并一键回填采用稿效果 | Impression、Design |
 | `/#/catalog` | 印谱汇总与导出 | 排序重编号、收录状态切换、印谱清单生成、JSON 导入导出与清空重播种 | Catalog 及全部模型 |
 
@@ -83,11 +83,13 @@ npm run preview    # 本地预览构建产物（http://localhost:22821）
 | --- | --- | --- | --- |
 | Stone 印石 | `src/lib/types/stone.ts` | `id` `name` `stoneType`（寿山/青田/昌化/巴林） `sizeMm`（长×宽×高） `knobStyle`（平顶/桥钮/古兽/薄意） `purchaseDate` `state`（在刻/已刻/闲置） | 新建后进入印稿设计，卡片回显已刻方数与最近钤印日期 |
 | Design 印稿 | `src/lib/types/design.ts` | `id` `stoneId` `sealText` `annotation` `style`（朱文/白文） `borderStyle`（无框/双边/借边/瓦当） `layoutNote` `adopted` | 同石多稿，采用稿唯一，采用后带出到刻制与钤印 |
-| Carve 刻制工序 | `src/lib/types/carve.ts` | `id` `designId` `seq` `knifeMethod`（冲刀/切刀/双刀/修整） `minutes` `operator` `state`（未开始/进行中/已完成） | 拖拽调序，全部完成即回写印石为已刻 |
+| Carve 刻制工序 | `src/lib/types/carve.ts` | `id` `designId` `seq` `knifeMethod`（冲刀/切刀/双刀/修整） `minutes` `operator` `planDate`（计划日，空串为待排区） `state`（未开始/进行中/已完成） | 拖拽调序，全部完成即回写印石为已刻；按执刀人 × 计划日校验每日容量 |
 | Impression 钤印记录 | `src/lib/types/impression.ts` | `id` `designId` `inkBrand` `paperType`（连史纸/宣纸/罗纹纸） `pressure`（轻/中/重） `grade`（优/良/一般/废） `stampedAt` | 同稿多次钤印按评级排序择优，可一键回填采用稿效果 |
 | Catalog 印谱条目 | `src/lib/types/catalog.ts` | `id` `stoneId` `designId` `orderNo` `included`（待收录/已收录/不收录） `note` | 调整排序后自动重编号并汇总已收录方数 |
 
-数据结构版本号 `DB_VERSION` 定义在 `src/lib/utils/db.ts`，当前为 `v2`：`v1` 为初版五表结构；`v2` 补充 `stones.purchaseDate`、`designs.borderStyle`、`carves.operator`、`impressions.paperType`、`catalogs.included` 等索引，并在 Dexie `.upgrade()` 中回填历史记录缺失字段（`grade`、`adopted`、`borderStyle`、`orderNo`、`included`、`note`）。
+数据结构版本号 `DB_VERSION` 定义在 `src/lib/utils/db.ts`，当前为 `v3`：`v1` 为初版五表结构；`v2` 补充 `stones.purchaseDate`、`designs.borderStyle`、`carves.operator`、`impressions.paperType`、`catalogs.included` 等索引，并在 Dexie `.upgrade()` 中回填历史记录缺失字段（`grade`、`adopted`、`borderStyle`、`orderNo`、`included`、`note`）；`v3` 为 `carves` 增加 `planDate` 计划日索引，无安排的旧工序置空串进入待排区（旧版 JSON 备份导入时同样规范化）。
+
+周排期规则（`src/lib/utils/schedule.ts`）：计划日仅工作日（周一至周五）；同一执刀人每日容量 240 分钟，保存时以 IndexedDB 实时数据核算，超出即拒绝并保留草稿与被占时段（两个页签同时保存时，后提交者不覆盖先确认的安排）；刀法顺序或时长改动后，后续未完工工序自动顺延到下一个有余额的工作日，已刻完的照旧。印石台账卡片与印谱清单均显示执刀人与预计完成日。
 
 ---
 

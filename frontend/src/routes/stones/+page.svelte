@@ -49,6 +49,7 @@
     type StoneType,
   } from '$lib/types/stone';
   import { buildStoneStats, describeSize, sealFaceAreaCm2 } from '$lib/utils/stone';
+  import { etaText } from '$lib/utils/schedule';
   import type { Catalog } from '$lib/types/catalog';
   import type { Grade } from '$lib/types/impression';
   import { GRADE_WEIGHT, GRADE_LABEL } from '$lib/types/impression';
@@ -232,6 +233,10 @@
               {stat?.catalogIncluded ?? 0} 方
             </div>
             <div>闲置 {stat?.idleDays ?? 0} 天 · 最近钤印 {stat?.lastStampedAt || '暂无'}</div>
+            <div>
+              执刀人：{stat && stat.operators.length > 0 ? stat.operators.join('、') : '—'} · 预计完成{' '}
+              {stat ? etaText(stat) : '—'}
+            </div>
           </dl>
 
           <div class="mt-3 flex flex-wrap items-center gap-2">

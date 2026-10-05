@@ -21,6 +21,8 @@ export interface Carve {
   minutes: number;
   /** 执刀人 */
   operator: string;
+  /** 计划日 yyyy-MM-dd；空串表示未排期（待排区） */
+  planDate: string;
   /** 工序状态 */
   state: CarveState;
   createdAt: number;
@@ -70,6 +72,9 @@ export const CARVE_STATE_OPTIONS: ReadonlyArray<{ value: CarveState; label: stri
 
 export const CARVE_STATE_FLOW: readonly CarveState[] = ['todo', 'doing', 'done'];
 
+/** 同一执刀人每个工作日的排期容量（分钟）；超出即拒绝保存，缺口留待排区 */
+export const DAILY_CAPACITY_MINUTES = 240;
+
 export function nextCarveState(state: CarveState): CarveState {
   const index = CARVE_STATE_FLOW.indexOf(state);
   if (index < 0 || index >= CARVE_STATE_FLOW.length - 1) return state;
@@ -94,6 +99,7 @@ export function createEmptyCarveDraft(designId: string, seq: number): CarveDraft
     knifeMethod: method,
     minutes: suggestMinutes(method),
     operator: '',
+    planDate: '',
     state: 'todo',
   };
 }
