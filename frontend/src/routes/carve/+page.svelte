@@ -1,7 +1,9 @@
 <script lang="ts">
   /**
-   * /carve 刻制工序看板
+   * /carve 刻制工序看板（周排期）
    * 按印稿列出刀法步骤、拖拽/上下移排序、逐条标记完成；全部完成即回写印石为已刻。
+   * 周排期：工序写执刀人与计划日，同一人每天容量超出即拒绝保存（缺口留待排区）；
+   * 刀法顺序或时长改动后，后续未完工工序自动顺延到下一个有余额的工作日，已刻完的照旧。
    * 消费 Carve、Design；复用 <StatBadge>、<FilterBar>、<EmptyPanel>。
    */
   import { push, router } from '$lib/router';
@@ -17,13 +19,14 @@
   import {
     advanceCarve,
     batchUpdateCarves,
+    carves,
     carvesOfDesign,
-    createCarve,
     generateStandardSequence,
     nextSeq,
     removeCarve,
     reorderCarves,
-    updateCarve,
+    rescheduleDesign,
+    saveCarve,
   } from '$lib/stores/carveStore';
   import { currentDesignId, designs, setCurrentDesign } from '$lib/stores/designStore';
   import { stones } from '$lib/stores/stoneStore';
@@ -41,6 +44,15 @@
     type KnifeMethod,
   } from '$lib/types/carve';
   import { DESIGN_STYLE_LABEL } from '$lib/types/design';
+  import {
+    DAILY_CAPACITY_MINUTES,
+    addDays,
+    backlogOf,
+    todayStr,
+    usedMinutesOn,
+    weekdayLabel,
+    workdaysOfWeek,
+  } from '$lib/utils/schedule';
 
   const { progressByDesign, totals } = useCarveProgress();
   const queryValues = $derived(parseQuery(router.querystring ?? ''));
@@ -65,6 +77,58 @@
 
   const progress = $derived(progressOfDesign($progressByDesign, activeDesignId));
 
+  /* ------------------------------ 周排期 ------------------------------ */
+
+  const today = todayStr();
+  let weekAnchor = $state(todayStr());
+  const weekDays = $derived(workdaysOfWeek(weekAnchor));
+
+  interface DayGroup {
+    operator: string;
+    used: number;
+    steps: Carve[];
+  }
+
+  interface DayColumn {
+    date: string;
+    groups: DayGroup[];
+  }
+
+  /** 一周 5 个工作日，按执刀人分组展示占用（容量按人按天计算，跨印稿汇总） */
+  const dayColumns = $derived.by((): DayColumn[] => {
+    return weekDays.map((date) => {
+      const planned = $carves.filter((carve) => carve.planDate === date);
+      const operators = [...new Set(planned.map((carve) => carve.operator.trim() || '未派'))];
+      const groups = operators
+        .map((operator) => {
+          const own = planned
+            .filter((carve) => (carve.operator.trim() || '未派') === operator)
+            .sort((a, b) => (a.designId === b.designId ? a.seq - b.seq : a.designId.localeCompare(b.designId)));
+          return { operator, used: own.reduce((sum, carve) => sum + carve.minutes, 0), steps: own };
+        })
+        .sort((a, b) => b.used - a.used);
+      return { date, groups };
+    });
+  });
+
+  /** 待排区：无计划日的未完工工序（全部印稿） */
+  const backlog = $derived(backlogOf($carves));
+
+  let scheduleNotice = $state('');
+
+  function designTextOf(designId: string): string {
+    return $designs.find((design) => design.id === designId)?.sealText ?? '（印稿已删除）';
+  }
+
+  async function autoSchedule(): Promise<void> {
+    if (!activeDesignId) return;
+    const changed = await rescheduleDesign(activeDesignId, 1, true);
+    scheduleNotice =
+      changed > 0 ? `已为当前印稿排入 / 顺延 ${changed} 道工序` : '当前印稿排期无需调整（待排工序请先填执刀人）';
+  }
+
+  /* ------------------------------ 筛选与工序操作 ------------------------------ */
+
   function updateQuery(patch: Record<string, string | string[] | undefined>): void {
     const merged: Record<string, string[]> = { ...parseQuery(router.querystring ?? '') };
     Object.entries(patch).forEach(([key, value]) => {
@@ -83,6 +147,7 @@
   let dialogOpen = $state(false);
   let editing = $state<Carve | null>(null);
   let draft = $state<CarveDraft>(createEmptyCarveDraft('', 1));
+  let saveError = $state('');
   let pendingDelete = $state<Carve | null>(null);
   let selectedIds = $state<string[]>([]);
   let dragId = $state('');
@@ -91,6 +156,7 @@
     if (!activeDesignId) return;
     editing = null;
     draft = createEmptyCarveDraft(activeDesignId, nextSeq(activeDesignId));
+    saveError = '';
     dialogOpen = true;
   }
 
@@ -102,21 +168,33 @@
       knifeMethod: carve.knifeMethod,
       minutes: carve.minutes,
       operator: carve.operator,
+      planDate: carve.planDate,
       state: carve.state,
     };
+    saveError = '';
     dialogOpen = true;
   }
 
+  /** 保存失败（容量超出 / 跨页签冲突）时草稿保留在对话框中，页面已刷新出被占时段 */
   async function submit(): Promise<void> {
-    if (editing) {
-      await updateCarve(editing.id, { ...draft });
-      editing = null;
-    } else {
-      await createCarve({ ...draft });
+    saveError = '';
+    const result = await saveCarve({ ...draft }, editing?.id ?? null, editing?.updatedAt ?? null);
+    if (!result.ok) {
+      saveError = result.reason;
+      return;
     }
     dialogOpen = false;
+    editing = null;
     selectedIds = [];
   }
+
+  /** 对话框内实时容量提示（按当前执刀人 + 计划日，排除本道） */
+  const capacityHint = $derived.by(() => {
+    if (!dialogOpen || !draft.planDate || draft.operator.trim() === '') return '';
+    const used = usedMinutesOn($carves, draft.operator, draft.planDate, editing?.id);
+    const left = Math.max(0, DAILY_CAPACITY_MINUTES - used);
+    return `${draft.operator.trim()} 在 ${draft.planDate} 已排 ${used} 分钟，剩余 ${left} 分钟（每日容量 ${DAILY_CAPACITY_MINUTES} 分钟）`;
+  });
 
   async function confirmDelete(): Promise<void> {
     if (!pendingDelete) return;
@@ -165,8 +243,10 @@
 <div class="space-y-4">
   <div class="flex flex-wrap items-end justify-between gap-3">
     <div>
-      <h2 class="text-xl tracking-wide text-ink">刻制工序看板</h2>
-      <p class="mt-1 text-sm text-ink-soft">按刀法排布刻制步骤，拖拽或上下移调整先后；全部完成自动回写印石为「已刻」。</p>
+      <h2 class="text-xl tracking-wide text-ink">刻制工序看板 · 周排期</h2>
+      <p class="mt-1 text-sm text-ink-soft">
+        工序写执刀人与计划日；同一人每天容量 {DAILY_CAPACITY_MINUTES} 分钟，超出拒绝保存，缺口留待排区。
+      </p>
     </div>
     <div class="flex flex-wrap items-center gap-2">
       <select
@@ -203,8 +283,93 @@
     <StatBadge label="已完成" value={progress.done} suffix="道" tone="jade" />
     <StatBadge label="进行中" value={progress.doing} suffix="道" tone="amber" />
     <StatBadge label="剩余时长" value={progress.remainingMinutes} suffix="分钟" />
+    <StatBadge label="待排区" value={backlog.length} suffix="道" tone={backlog.length > 0 ? 'amber' : 'default'} />
     <StatBadge label="全局完成率" value={`${$totals.percent}%`} percent={$totals.percent} tone="ink" />
   </div>
+
+  <section class="gb-panel space-y-3">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <h3 class="text-base text-ink">
+        周排期（{weekDays[0]} ~ {weekDays[4]}，仅工作日）
+      </h3>
+      <div class="flex flex-wrap gap-2">
+        <button class="gb-btn" onclick={() => (weekAnchor = addDays(weekAnchor, -7))}>上一周</button>
+        <button class="gb-btn" onclick={() => (weekAnchor = todayStr())}>本周</button>
+        <button class="gb-btn" onclick={() => (weekAnchor = addDays(weekAnchor, 7))}>下一周</button>
+        <button class="gb-btn-primary" onclick={() => void autoSchedule()}>自动排期当前印稿</button>
+      </div>
+    </div>
+    {#if scheduleNotice}
+      <p class="text-xs text-jade">{scheduleNotice}</p>
+    {/if}
+
+    <div class="grid grid-cols-1 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+      {#each dayColumns as day (day.date)}
+        <div
+          class="rounded-lg border border-line bg-black/[0.02] p-2 {day.date === today ? 'ring-1 ring-seal/50' : ''}"
+        >
+          <div class="mb-1 flex items-baseline justify-between">
+            <span class="text-xs font-medium text-ink">{weekdayLabel(day.date)}{day.date === today ? ' · 今天' : ''}</span>
+            <span class="text-xs tabular-nums text-ink-soft">{day.date.slice(5)}</span>
+          </div>
+          {#each day.groups as group (group.operator)}
+            <div class="mb-1.5">
+              <div class="flex items-baseline justify-between text-xs">
+                <span class="text-ink">{group.operator}</span>
+                <span
+                  class="tabular-nums {group.used > DAILY_CAPACITY_MINUTES ? 'font-medium text-seal' : 'text-ink-soft'}"
+                >
+                  {group.used}/{DAILY_CAPACITY_MINUTES}′
+                </span>
+              </div>
+              <div class="mt-0.5 h-1 overflow-hidden rounded-full bg-black/10">
+                <div
+                  class="h-full rounded-full"
+                  style="width:{Math.min(100, (group.used / DAILY_CAPACITY_MINUTES) * 100)}%;background:{group.used >
+                  DAILY_CAPACITY_MINUTES
+                    ? '#9c2b1f'
+                    : '#3f6b57'}"
+                ></div>
+              </div>
+              {#each group.steps as step (step.id)}
+                <button
+                  class="mt-1 block w-full rounded border border-line bg-paper-light px-1.5 py-0.5 text-left text-xs transition hover:border-seal/50 {step.state ===
+                  'done'
+                    ? 'opacity-60'
+                    : ''}"
+                  onclick={() => openEdit(step)}
+                  title="点击编辑排期"
+                >
+                  <span style="color:{KNIFE_METHOD_COLOR[step.knifeMethod]}">{KNIFE_METHOD_LABEL[step.knifeMethod]}</span>
+                  {designTextOf(step.designId)} · {step.minutes}′{step.state === 'done' ? '（已刻）' : ''}
+                </button>
+              {/each}
+            </div>
+          {:else}
+            <p class="py-1 text-xs text-ink-soft">未排工</p>
+          {/each}
+        </div>
+      {/each}
+    </div>
+
+    <div class="rounded-lg border border-dashed border-line p-2">
+      <div class="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+        <span class="text-xs font-medium text-ink">待排区（{backlog.length} 道）</span>
+        <span class="text-xs text-ink-soft">容量不足或未填执刀人的未完工工序在此等候；点条目可编辑排期</span>
+      </div>
+      {#if backlog.length === 0}
+        <p class="text-xs text-ink-soft">没有待排工序。</p>
+      {:else}
+        <div class="flex flex-wrap gap-1">
+          {#each backlog as step (step.id)}
+            <button class="gb-tag transition hover:border-seal/60" onclick={() => openEdit(step)}>
+              {designTextOf(step.designId)} · 第 {step.seq} 道 {KNIFE_METHOD_LABEL[step.knifeMethod]} · {step.minutes}′ · {step.operator.trim() || '未填执刀人'}
+            </button>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  </section>
 
   <FilterBar
     keyword={firstValue(queryValues, 'kw')}
@@ -221,7 +386,7 @@
     <EmptyPanel
       title={progress.total === 0 ? '该印稿还没有排工序' : '当前筛选条件下没有工序'}
       description={progress.total === 0
-        ? '可一键生成标准刀法序列（冲刀 → 切刀 → 双刀 → 修整），也可手动逐条新增。'
+        ? '可一键生成标准刀法序列（冲刀 → 切刀 → 双刀 → 修整），新工序先进入待排区，再自动排期落位。'
         : '试着调整刀法或状态筛选条件。'}
       actionText="生成标准序列"
       secondaryText="重置筛选"
@@ -253,7 +418,9 @@
           <span class="gb-tag" style="color:{CARVE_STATE_COLOR[step.state]};border-color:{CARVE_STATE_COLOR[step.state]}66">
             {CARVE_STATE_LABEL[step.state]}
           </span>
-          <span class="text-sm text-ink-soft">{step.minutes} 分钟 · {step.operator || '未填执刀人'}</span>
+          <span class="text-sm text-ink-soft">
+            {step.minutes} 分钟 · {step.operator || '未填执刀人'} · {step.planDate ? `${step.planDate}（${weekdayLabel(step.planDate)}）` : '待排'}
+          </span>
 
           <div class="ml-auto flex flex-wrap gap-1">
             <button class="gb-btn" onclick={() => void move(step, -1)} title="上移">↑</button>
@@ -269,6 +436,8 @@
 
   <p class="text-xs text-ink-soft">
     状态推进顺序：未开始 → 进行中 → 已完成；某印稿全部工序完成时，会把所属印石状态回写为「已刻」。
+    刀法顺序或时长改动后，后续未完工工序自动顺延到下一个有余额的工作日，已刻完的照旧；
+    两个页签同时保存时，先确认的安排生效，后提交者保留草稿并可看到被占时段。
   </p>
 </div>
 
@@ -301,14 +470,26 @@
             <input class="gb-input" bind:value={draft.operator} placeholder="如：顾墨" />
           </label>
         </div>
-        <label class="block">
-          <span class="gb-label">状态</span>
-          <select class="gb-input" bind:value={draft.state}>
-            {#each CARVE_STATE_OPTIONS as item (item.value)}
-              <option value={item.value}>{item.label}</option>
-            {/each}
-          </select>
-        </label>
+        <div class="grid gap-3 sm:grid-cols-2">
+          <label class="block">
+            <span class="gb-label">计划日（留空进入待排区）</span>
+            <input class="gb-input" type="date" bind:value={draft.planDate} />
+          </label>
+          <label class="block">
+            <span class="gb-label">状态</span>
+            <select class="gb-input" bind:value={draft.state}>
+              {#each CARVE_STATE_OPTIONS as item (item.value)}
+                <option value={item.value}>{item.label}</option>
+              {/each}
+            </select>
+          </label>
+        </div>
+        {#if capacityHint}
+          <p class="text-xs text-ink-soft">{capacityHint}</p>
+        {/if}
+        {#if saveError}
+          <p class="rounded-lg border border-seal/40 bg-seal/10 px-3 py-2 text-xs text-seal">{saveError}</p>
+        {/if}
       </div>
       <div class="mt-5 flex justify-end gap-2">
         <button class="gb-btn" onclick={() => (dialogOpen = false)}>取消</button>

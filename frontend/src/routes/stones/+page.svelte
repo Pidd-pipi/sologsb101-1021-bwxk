@@ -232,6 +232,11 @@
               {stat?.catalogIncluded ?? 0} 方
             </div>
             <div>闲置 {stat?.idleDays ?? 0} 天 · 最近钤印 {stat?.lastStampedAt || '暂无'}</div>
+            {#if (stat?.pendingCarves ?? 0) > 0}
+              <div>
+                执刀：{stat?.operators.join('、') || '待派'} · 预计完成 {stat?.estimatedFinish || '待排期'}
+              </div>
+            {/if}
           </dl>
 
           <div class="mt-3 flex flex-wrap items-center gap-2">
@@ -255,7 +260,8 @@
   {/if}
 
   <p class="text-xs text-ink-soft">
-    提示：印石状态按「在刻 → 已刻 → 闲置」推进；已刻方数按「采用稿 + 工序全部完成」统计，工序完成时自动回写。
+    提示：印石状态按「在刻 → 已刻 → 闲置」推进；已刻方数按「采用稿 + 工序全部完成」统计，工序完成时自动回写；
+    尚有未完工工序的印石会显示执刀人与预计完成日（来自刻制周排期）。
   </p>
 </div>
 

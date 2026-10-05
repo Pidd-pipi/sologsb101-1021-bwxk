@@ -21,6 +21,8 @@ export interface Carve {
   minutes: number;
   /** 执刀人 */
   operator: string;
+  /** 计划日 yyyy-MM-dd；空串表示未排期（进入待排区） */
+  planDate: string;
   /** 工序状态 */
   state: CarveState;
   createdAt: number;
@@ -94,6 +96,7 @@ export function createEmptyCarveDraft(designId: string, seq: number): CarveDraft
     knifeMethod: method,
     minutes: suggestMinutes(method),
     operator: '',
+    planDate: '',
     state: 'todo',
   };
 }

@@ -118,4 +118,10 @@ export interface StoneStat {
   lastStampedAt: string;
   /** 印谱收录方数 */
   catalogIncluded: number;
+  /** 未完工工序的执刀人（去重） */
+  operators: string[];
+  /** 预计完成日（未完工工序中最晚的计划日；无已排工序为空串） */
+  estimatedFinish: string;
+  /** 未完工工序数 */
+  pendingCarves: number;
 }

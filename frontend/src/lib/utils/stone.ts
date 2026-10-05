@@ -19,6 +19,7 @@ import type { Design } from '$lib/types/design';
 import type { Carve } from '$lib/types/carve';
 import type { Impression } from '$lib/types/impression';
 import type { Catalog } from '$lib/types/catalog';
+import { estimateFinishDate, operatorsOf } from './schedule';
 
 export interface StoneSize {
   lengthMm: number;
@@ -131,6 +132,9 @@ export function buildStoneStats(
       catalogIncluded: catalogs.filter(
         (catalog) => catalog.stoneId === stone.id && catalog.included === 'included',
       ).length,
+      operators: operatorsOf(stoneCarves, designIds),
+      estimatedFinish: estimateFinishDate(stoneCarves, designIds),
+      pendingCarves: stoneCarves.filter((carve) => carve.state !== 'done').length,
     };
   });
   return result;

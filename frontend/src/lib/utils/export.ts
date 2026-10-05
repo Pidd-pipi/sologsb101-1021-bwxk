@@ -12,6 +12,7 @@ import { DESIGN_STYLE_LABEL, BORDER_STYLE_LABEL } from '$lib/types/design';
 import { GRADE_LABEL, PAPER_KIND_LABEL, PRESSURE_LABEL } from '$lib/types/impression';
 import { INCLUDED_LABEL } from '$lib/types/catalog';
 import { KNIFE_METHOD_LABEL, CARVE_STATE_LABEL } from '$lib/types/carve';
+import { estimateFinishDate } from './schedule';
 import { describeSize } from './stone';
 import type { SealCarveSnapshot } from './db';
 
@@ -96,8 +97,16 @@ export function buildCatalogText(context: SealCatalogContext): string {
       }`,
     );
     lines.push(
-      `　工序：${steps.length === 0 ? '未排工序' : steps.map((step) => `${step.seq}.${KNIFE_METHOD_LABEL[step.knifeMethod]}(${CARVE_STATE_LABEL[step.state]})`).join(' → ')}`,
+      `　工序：${steps.length === 0 ? '未排工序' : steps.map((step) => `${step.seq}.${KNIFE_METHOD_LABEL[step.knifeMethod]}(${step.operator.trim() || '未派'}·${step.planDate || '待排'}·${CARVE_STATE_LABEL[step.state]})`).join(' → ')}`,
     );
+    if (steps.length > 0) {
+      const pending = steps.filter((step) => step.state !== 'done');
+      const finish = estimateFinishDate(steps, [catalog.designId]);
+      const finishText = pending.length === 0 ? '已完工' : finish || '待排期';
+      // 清单留档：执刀人按全部工序统计（含已完工），预计完成日只看未完工工序
+      const allOperators = [...new Set(steps.map((step) => step.operator.trim()).filter((name) => name !== ''))];
+      lines.push(`　执刀人：${allOperators.join('、') || '—'}　预计完成：${finishText}`);
+    }
     lines.push(
       `　钤印：${prints.length} 次${best ? `　最佳评级：${GRADE_LABEL[best.grade]}（${best.stampedAt}　${best.inkBrand}／${PAPER_KIND_LABEL[best.paperType]}／${PRESSURE_LABEL[best.pressure]}）` : ''}`,
     );
